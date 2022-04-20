@@ -95,11 +95,19 @@ static int board_led_init(void)
     }
     printk("led-gpio num is %d", gpioled.led_gpio);
 
+    // 申请gpio
+    ret = gpio_request(gpioled.led_gpio, "led-gpio");
+    if (ret < 0) {
+        printk("gpio %d request fail!\n", gpioled.led_gpio);
+        return -3;
+    }
+
     //设置gpio方向并输出默认电平
     ret = gpio_direction_output(gpioled.led_gpio, 1);
     if (ret < 0) {
         printk("gpio_direction_output fail!");
-        return -3;
+        gpio_free(gpioled.led_gpio);
+        return -4;
     }
 
     return 0;
@@ -156,6 +164,9 @@ static int __init led_dts_init(void)
 
 static void __exit led_dts_exit(void)
 {
+    // 释放gpio
+    gpio_free(gpioled.led_gpio);
+
     // 将设备从内核删除
     cdev_del(gpioled.led_dts_cdev);
 

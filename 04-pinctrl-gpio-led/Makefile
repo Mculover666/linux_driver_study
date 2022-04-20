@@ -1,9 +1,9 @@
 KERNEL_DIR = /home/mculover666/imx6ull/kernel/linux-imx6ull
 obj-m := led_dts.o
 
-build: kernel_modules
+build: kernel_module
 
-kernel_modules:
+kernel_module:
 	$(MAKE)	-C $(KERNEL_DIR) M=$(CURDIR) modules
 
 clean:
