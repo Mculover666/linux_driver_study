@@ -1,3 +1,13 @@
+/******************************************************************
+ * @brief       按键驱动
+ * @author      Mculover666
+ * 
+ * changelog
+ * v1.0 2022/4/20 初步完成驱动，基于标志位原始写法          
+ * v1.1 2022/4/21 添加软件定时器进行消抖
+ * 
+******************************************************************/
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -10,6 +20,7 @@
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/uaccess.h>
+#include <linux/timer.h>
 
 #define KEY0_VALUE  0x01
 
@@ -24,6 +35,7 @@ struct key_dev {
     int debounce_interval;      /*!< 去抖时长           */
     atomic_t    keyval;         /*!< 键值               */
     atomic_t    press;          /*!< 标志按键是否按下    */
+    struct timer_list  timer;   /*!< 用于软件消抖        */
 
     int irq;                    /*!< 中断号             */
 };
@@ -35,20 +47,42 @@ static irqreturn_t key0_handler(int irq, void *dev_id)
     int val;
     struct key_dev *dev = (struct key_dev *)dev_id;
 
-    val = gpio_get_value(dev->gpio);
-    if (val == 0) {
-        atomic_set(&dev->keyval, KEY0_VALUE);
-        atomic_set(&key.press, 1);
+    if (dev->debounce_interval) {
+        // 启动软件定时器, 消抖时间后再去读取
+        mod_timer(&dev->timer, jiffies + msecs_to_jiffies(dev->debounce_interval));
+        dev->timer.data = (volatile long)dev_id;
     } else {
-        atomic_set(&dev->keyval, 0xFF);  // 无效键值
+        // 立即读取
+        val = gpio_get_value(dev->gpio);
+        if (val == 0) {
+            atomic_set(&dev->keyval, KEY0_VALUE);
+            atomic_set(&key.press, 1);
+        } else {
+            atomic_set(&dev->keyval, 0xFF);
+        }
     }
 
     return IRQ_RETVAL(IRQ_HANDLED);
 }
 
+static void timer_handler(unsigned long arg)
+{
+    int val;
+    struct key_dev *dev = (struct key_dev *)arg;
+
+    val = gpio_get_value(dev->gpio);
+    if (val == 0) {
+        atomic_set(&dev->keyval, KEY0_VALUE);
+        atomic_set(&key.press, 1);
+    } else {
+        atomic_set(&dev->keyval, 0xFF);
+    }
+}
+
 static int key_init(void)
 {
     int ret;
+    uint32_t debounce_interval = 0;
 
     // 获取设备树节点
     key.node = of_find_node_by_name(NULL, "key0");
@@ -73,15 +107,21 @@ static int key_init(void)
     gpio_direction_input(key.gpio);
 
     // 解析设备树，获取去抖时长
-    if (of_property_read_u32(key.node, "debounce-interval", &key.debounce_interval)) {
-        key.debounce_interval = 10;    // default
+    if (of_property_read_u32(key.node, "debounce-interval", &debounce_interval) < 0) {
+        printk("find debounce-interval fail!\n");
+        goto error;
     }
 
     // 设置去抖时长
-    if (key.debounce_interval) {
+    if (debounce_interval) {
         ret = gpio_set_debounce(key.gpio, key.debounce_interval * 1000);
         if (ret < 0) {
-            printk("gpio_set_debounce fail, ret is %d!\n", ret);
+            printk("gpio_set_debounce not support, use soft timer!\n");
+            
+            // 设置软件定时器用于消抖
+            init_timer(&key.timer);
+            key.timer.function = timer_handler;
+            key.debounce_interval = debounce_interval;
         }
     }
 
@@ -89,16 +129,14 @@ static int key_init(void)
     key.irq = gpio_to_irq(key.gpio);
     if (key.irq < 0) {
         printk("gpio_to_irq fail!\n");
-        gpio_free(key.gpio);
-        return -1;
+        goto error;
     }
 
     // 申请中断
     ret = request_irq(key.irq, key0_handler, IRQF_TRIGGER_FALLING, "key_irq", &key);
     if (ret < 0) {
         printk("irq request fail, ret is %d!\n", ret);
-        gpio_free(key.gpio);
-        return -1;
+        goto error;
     }
 
     // 初始化键值与标志位
@@ -106,6 +144,10 @@ static int key_init(void)
     atomic_set(&key.press, 0);
 
     return 0;
+
+error:
+    gpio_free(key.gpio);
+    return -1;
 }
 
 static void key_deinit(void)
@@ -115,6 +157,9 @@ static void key_deinit(void)
 
     // 释放gpio
     gpio_free(key.gpio);
+
+    // 删除定时器
+    del_timer(&key.timer);
 }
 
 static int key_open(struct inode *inode, struct file *fp)
