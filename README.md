@@ -47,3 +47,5 @@ source build_env.sh
 - [i.MX6ULL驱动开发 | 17 - Linux中断机制及使用方法（tasklet、workqueue、软中断）](https://blog.csdn.net/Mculover666/article/details/124244171)
 - [i.MX6ULL驱动开发 | 18 - 使用中断方式检测按键](https://blog.csdn.net/Mculover666/article/details/124267028)
 - [i.MX6ULL驱动开发 | 19 - Linux内核定时器的编程方法与使用示例](https://blog.csdn.net/Mculover666/article/details/124297680)
+- [i.MX6ULL驱动开发 | 20 - Linux input 子系统](https://blog.csdn.net/Mculover666/article/details/124322791)
+- [i.MX6ULL驱动开发 | 21 - 按键驱动使用 input 子系统上报事件](https://mculover666.blog.csdn.net/article/details/124338588)
