@@ -4,7 +4,7 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/**",
-                "/home/mculover666/imx6ull/kernel/linux-imx6ull/**"
+                "/home/mculover666/develop/imx6ull/linux-imx6ull/**"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",
