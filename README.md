@@ -58,3 +58,4 @@ source build_env.sh
 - [i.MX6ULL驱动开发 | 29 - 使用USB WIFI网卡（RTL8188EU）](https://blog.csdn.net/Mculover666/article/details/125710392)
 - [i.MX6ULL驱动开发 | 30 - 使用EC20 4G网卡（移植移远GobiNet驱动）](https://mculover666.blog.csdn.net/article/details/125740257)
 - [i.MX6ULL驱动开发 | 31 - Linux内核网络设备驱动框架](https://mculover666.blog.csdn.net/article/details/125993944)
+- [i.MX6ULL驱动开发 | 32 - 手动编写一个虚拟网卡设备](https://blog.csdn.net/Mculover666/article/details/126003032)

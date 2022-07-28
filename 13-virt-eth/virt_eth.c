@@ -61,11 +61,25 @@ static void virt_rs_pack(struct sk_buff *skb, struct net_device *dev)
     dev->stats.rx_bytes += skb->len;
     dev->last_rx= jiffies;
 
-    /* 收包 */
+    /* 把数据包交给上层协议 */
     netif_rx(rx_skb);
 }
 
-static netdev_tx_t virt_send_packet(struct sk_buff *skb, struct net_device *dev)
+static int virt_eth_open(struct net_device *dev)
+{
+    /* 激活数据传输队列 */
+    netif_start_queue(dev);
+    return 0;
+}
+
+static int virt_eth_stop(struct net_device *dev)
+{
+    /* 停止数据传输队列 */
+    netif_stop_queue(dev);
+    return 0;
+}
+
+static netdev_tx_t virt_eth_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
     /* 阻止上层向网络设备驱动层发送数据包 */
     netif_stop_queue(dev);
@@ -90,9 +104,9 @@ static netdev_tx_t virt_send_packet(struct sk_buff *skb, struct net_device *dev)
 static const struct net_device_ops virt_eth_dev_ops = {
     .ndo_init = NULL,
     .ndo_uninit = NULL,
-    .ndo_open = NULL,
-    .ndo_stop = NULL,
-    .ndo_start_xmit = virt_send_packet,
+    .ndo_open = virt_eth_open,
+    .ndo_stop = virt_eth_stop,
+    .ndo_start_xmit = virt_eth_start_xmit,
 };
 
 static int virt_eth_register(void)
@@ -123,7 +137,10 @@ static int virt_eth_register(void)
     rc = register_netdev(virt_eth_dev);
     if (rc) {
         printk("register_netdev error!\r\n");
+        free_netdev(virt_eth_dev);
+        return -1;
     }
+
     return 0;
 }
 
