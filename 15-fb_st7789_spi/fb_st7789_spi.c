@@ -528,11 +528,18 @@ int st7789_refresh_kthread_func(void *data)
     return 0;
 }
 
+int st7789_fb_blank(int blank, struct fb_info *info)
+{
+    lcd_clear();
+    return 0;
+}
+
 struct fb_ops st7789_fb_ops = {
     .owner		= THIS_MODULE,
     .fb_fillrect	= cfb_fillrect,
 	.fb_copyarea	= cfb_copyarea,
 	.fb_imageblit	= cfb_imageblit,
+    .fb_blank       = st7789_fb_blank,
 };
 
 static int st7789_probe(struct spi_device *spi)
