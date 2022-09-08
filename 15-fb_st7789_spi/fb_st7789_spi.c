@@ -10,6 +10,8 @@
 #include <linux/gpio.h>
 #include <linux/delay.h>
 #include <linux/uaccess.h>
+#include <linux/fb.h>
+#include <linux/dma-mapping.h>
 
 // Whether to enable display inversion
 #define USE_DISPLAY_INVERSION       1
@@ -32,6 +34,7 @@
 
 struct st7789_lcd_spi {
     struct spi_device *spi;
+    struct task_struct *thread;
 
     int cs_gpio;
     int reset_gpio;
@@ -53,8 +56,8 @@ typedef struct lcd_color_params_st {
 static struct st7789_lcd_spi lcd;
 
 static lcd_color_params_t s_lcd_color_params = {
-    .background_color = WHITE,
-    .foreground_color = BLACK
+    .background_color = BLACK,
+    .foreground_color = WHITE
 };
 
 static int lcd_blk(int status)
@@ -155,12 +158,6 @@ static void lcd_write_data(uint8_t dat)
 {
     lcd_dc(1);
     lcd_write_byte(dat);
-}
-
-static void lcd_write_color(const uint16_t color)
-{
-    lcd_write_byte(color >> 8);
-    lcd_write_byte(color);
 }
 
 uint16_t rgb2hex_565(uint16_t r, uint16_t g, uint16_t b)
@@ -374,6 +371,12 @@ int lcd_init(void)
     return 0;
 }
 
+int lcd_deinit(void)
+{
+    lcd_display_off();
+    return 0;
+}
+
 /*
 	spilcd: st7789@1 {
 		compatible = "spilcd,st7789";
@@ -478,8 +481,65 @@ static int st7789_params_parse_dt(struct st7789_lcd_spi *st7789, struct device *
     return 0;
 }
 
+int st7789_refresh_kthread_func(void *data)
+{
+    struct fb_info *fb = (struct fb_info *)data;
+    int x, y;
+    uint32_t pixel;
+    uint16_t color;
+
+    uint8_t *ptr;
+    uint16_t *mem = kzalloc(lcd.width * lcd.height * 2, GFP_KERNEL);
+    uint32_t *base = (uint32_t *)(fb->screen_base);
+
+    if (!mem || !base) {
+        printk("st7789_refresh_kthread_func mem fail!\n");
+        return 0;
+    }
+
+    while (1) {
+        if (kthread_should_stop())
+            break;
+        
+        //make data
+        for (y = 0; y < fb->var.yres; y++) {
+            for (x = 0; x < fb->var.xres; x++) {
+                pixel = base[y*fb->var.xres+x];
+                ptr = (uint8_t *)&pixel;
+                color = ptr[0] >> 3;
+                color |= (ptr[1]>>2)<<5;
+                color |= (ptr[2]>>3)<<11;
+                *((uint16_t *)mem + y * fb->var.yres + x) = ((color&0xff) << 8) | ((color&0xff00) >> 8);
+            }
+        }
+
+        //flush to screen
+        lcd_address_set(0, 0, lcd.width - 1, lcd.height - 1);
+        lcd_cs(0);
+        lcd_dc(1);
+        lcd_write_bytes((uint8_t *)mem, lcd.width*lcd.height*2);
+        lcd_cs(1);
+
+        //FPS@30
+        msleep(33);
+    }
+
+    kfree(mem);
+    return 0;
+}
+
+struct fb_ops st7789_fb_ops = {
+    .owner		= THIS_MODULE,
+    .fb_fillrect	= cfb_fillrect,
+	.fb_copyarea	= cfb_copyarea,
+	.fb_imageblit	= cfb_imageblit,
+};
+
 static int st7789_probe(struct spi_device *spi)
 {
+    int ret;
+    struct fb_info *fb;
+
     printk(KERN_INFO "------ st7789 spi lcd probe in ------\n");
 
     if (st7789_gpio_parse_dt(&lcd, &spi->dev) < 0) {
@@ -489,7 +549,7 @@ static int st7789_probe(struct spi_device *spi)
 
     if (st7789_params_parse_dt(&lcd, &spi->dev) < 0) {
         printk(KERN_ERR "st7789_params_parse_dt fail!\n");
-        return -1;
+        goto params_parse_fail;
     }
 
     spi->mode = SPI_MODE_3;
@@ -497,21 +557,100 @@ static int st7789_probe(struct spi_device *spi)
     lcd.spi = spi;
     if (lcd_init() < 0) {
         printk(KERN_ERR "st7789 lcd init fail!\n");
-        return -1;
+        goto lcd_init_fail;
     }
-    
-    printk(KERN_INFO "------ st7789 spi lcd probe out ------\n");
 
+    fb = framebuffer_alloc(0, NULL);
+    if (!fb) {
+        printk(KERN_ERR "st7789 lcd framebuffer alloc fail!\n");
+        goto fb_alloc_fail;
+    }
+
+    //LCD基本参数设置
+    fb->var.xres   = lcd.width;
+    fb->var.yres   = lcd.height;
+    fb->var.xres_virtual = lcd.width;
+    fb->var.yres_virtual = lcd.height;
+    fb->var.bits_per_pixel = 32;
+
+    //LCD RGB格式设置, RGB888
+    fb->var.red.offset = 16;
+    fb->var.red.length = 8;
+    fb->var.green.offset = 8;
+    fb->var.green.length = 8;
+    fb->var.blue.offset = 0;
+    fb->var.blue.length = 8;
+
+    //设置固定参数
+    strcpy(fb->fix.id, "st7789,spilcd");
+    fb->fix.type   = FB_TYPE_PACKED_PIXELS;
+    fb->fix.visual = FB_VISUAL_TRUECOLOR;
+
+    //设置显存
+    fb->fix.line_length = lcd.width * 32 / 8;
+    fb->fix.smem_len    = lcd.width * lcd.height * 32 / 8;
+    printk("fb->fix.smem_len is %d\n", fb->fix.smem_len);
+    dma_set_coherent_mask(&spi->dev, DMA_BIT_MASK(32));
+    fb->screen_base = dma_alloc_coherent(&spi->dev, fb->fix.smem_len, (dma_addr_t*)&fb->fix.smem_start, GFP_KERNEL);
+    if (!fb->screen_base) {
+        printk(KERN_ERR "dma_alloc_coherent %d bytes fail!\n", fb->fix.smem_len);
+        goto dma_alloc_fail;
+    }
+    printk("fb->screen_base is 0x%08x\n", (uint32_t)fb->screen_base);
+    fb->screen_size = lcd.width * lcd.height * 32 / 8;
+    printk("fb->screen_size is %ld\n", fb->screen_size);
+
+    //操作函数集
+    fb->fbops = &st7789_fb_ops;
+
+    spi_set_drvdata(spi, fb);
+    ret = register_framebuffer(fb);
+    if (ret < 0) {
+        printk(KERN_ERR "register framebuffer fail!\n");
+        goto register_fail;
+    }
+
+    lcd.thread = kthread_run(st7789_refresh_kthread_func, fb, spi->modalias);
+
+    printk(KERN_INFO "------ st7789 spi lcd probe out ------\n");
     return 0;
+
+register_fail:
+    dma_free_coherent(&spi->dev, fb->fix.smem_len, fb->screen_base, fb->fix.smem_start);
+
+dma_alloc_fail:
+    framebuffer_release(fb);
+
+fb_alloc_fail:
+    lcd_deinit();
+
+lcd_init_fail:
+params_parse_fail:
+    gpio_free(lcd.bl_gpio);
+    gpio_free(lcd.dc_gpio);
+    gpio_free(lcd.reset_gpio);
+
+    return -1;
 }
 
 static int st7789_remove(struct spi_device *spi)
 {
-    lcd_display_off();
+    struct fb_info *fb = spi_get_drvdata(spi);
 
+    printk(KERN_INFO "------ st7789 spi lcd remove in ------\n");
+
+    kthread_stop(lcd.thread);
+    unregister_framebuffer(fb);
+    framebuffer_release(fb);
+    if (!fb->screen_base) {
+        dma_free_coherent(&spi->dev, fb->fix.smem_len, fb->screen_base, fb->fix.smem_start);
+    }
+    lcd_deinit();
     gpio_free(lcd.bl_gpio);
     gpio_free(lcd.dc_gpio);
     gpio_free(lcd.reset_gpio);
+
+    printk(KERN_INFO "------ st7789 spi lcd remove out ------\n");
 
     return 0;
 }
@@ -557,8 +696,8 @@ static void __exit st7789_module_exit(void)
     spi_unregister_driver(&st7789_driver);
 }
 
-module_init(st7789_module_init)
-module_exit(st7789_module_exit)
+module_init(st7789_module_init);
+module_exit(st7789_module_exit);
 
 MODULE_AUTHOR("Mculover666");
 MODULE_LICENSE("GPL");
